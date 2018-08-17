@@ -33,9 +33,8 @@ def ReadEmailDetails(service, user_id, msg_id):
   try:
 
       message = service.users().messages().get(userId=user_id, id=msg_id).execute() # fetch the message using API
-      payld = message['payload'] # get payload of the message
-      headr = payld['headers'] # get header of the payload
-
+      payLoad = message['payload'] # get payload of the message
+      headr = payLoad['headers'] # get header of the payload
 
       for one in headr: # getting the Subject
           if one['name'] == 'Subject':
@@ -43,7 +42,6 @@ def ReadEmailDetails(service, user_id, msg_id):
               temp_dict['Subject'] = msg_subject
           else:
               pass
-
 
       for two in headr: # getting the date
           if two['name'] == 'Date':
@@ -54,24 +52,35 @@ def ReadEmailDetails(service, user_id, msg_id):
           else:
               pass
 
-
       # Fetching message body
-      email_parts = payld['parts'] # fetching the message parts
-      part_one  = email_parts[0] # fetching first element of the part
-      part_body = part_one['body'] # fetching body of the message
+
+      part_body = None
+
+      if 'parts' in payLoad:
+        email_parts = payLoad['parts'] # fetching the message parts
+        part_one  = email_parts[0] # fetching first element of the part
+        part_body = part_one['body'] # fetching body of the message
+      elif 'body' in payLoad:
+        part_body = payLoad['body'] # fetching body of the message
+
+      if part_body['size'] == 0:
+        #print(payLoad)
+        return None
+
       part_data = part_body['data'] # fetching data from the body
       clean_one = part_data.replace("-","+") # decoding from Base64 to UTF-8
       clean_one = clean_one.replace("_","/") # decoding from Base64 to UTF-8
       clean_two = base64.b64decode (bytes(clean_one, 'UTF-8')) # decoding from Base64 to UTF-8
       soup = BeautifulSoup(clean_two , "lxml" )
       message_body = soup.body()
+
       # message_body is a readible form of message body
       # depending on the end user's requirements, it can be further cleaned
       # using regex, beautiful soup, or any other method
       temp_dict['Message_body'] = message_body
 
   except Exception as e:
-      print(e)
+      print('Email read error: %s' % e)
       temp_dict = None
       pass
 
@@ -79,50 +88,9 @@ def ReadEmailDetails(service, user_id, msg_id):
       return temp_dict
 
 
-def ListMessagesWithLabels(service, user_id, label_ids=[]):
-  """List all Messages of the user's mailbox with label_ids applied.
-
-  Args:
-    service: Authorized Gmail API service instance.
-    user_id: User's email address. The special value "me"
-    can be used to indicate the authenticated user.
-    label_ids: Only return Messages with these labelIds applied.
-
-  Returns:
-    List of Messages that have all required Labels applied. Note that the
-    returned list contains Message IDs, you must use get with the
-    appropriate id to get the details of a Message.
-  """
-  try:
-    response = service.users().messages().list(userId=user_id,
-                                               labelIds=label_ids,
-                                               maxResults=500).execute()
-
-    messages = []
-    if 'messages' in response:
-      messages.extend(response['messages'])
-
-    while 'nextPageToken' in response:
-      page_token = response['nextPageToken']
-
-      response = service.users().messages().list(userId=user_id,
-                                                 labelIds=label_ids,
-                                                 pageToken=page_token,
-                                                 maxResults=500).execute()
-
-      messages.extend(response['messages'])
-
-      print('... total %d emails on next page [page token: %s], %d listed so far' % (len(response['messages']), page_token, len(messages)))
-      sys.stdout.flush()
-
-    return messages
-
-  except errors.HttpError as error:
-    print('An error occurred: %s' % error)
-
-
 if __name__ == "__main__":
   print('\n... start')
+  sys.stdout.flush()
 
   # Creating a storage.JSON file with authentication details
   SCOPES = 'https://www.googleapis.com/auth/gmail.modify' # we are using modify and not readonly, as we will be marking the messages Read
@@ -139,36 +107,57 @@ if __name__ == "__main__":
   label_id_one = 'INBOX'
   label_id_two = 'UNREAD'
 
-  print('\n... list all emails')
+  # Exporting the values in .tsv
+  rows = 0
+  file = 'emails_%s.tsv' % (strftime("%Y_%m_%d_%H%M%S", gmtime()))
 
-  # email_list = ListMessagesWithLabels(GMAIL, user_id, [label_id_one,label_id_two])  # to read unread emails from inbox
-  email_list = ListMessagesWithLabels(GMAIL, user_id, [])
-
-  final_list = [ ]
-
-  print('\n... fetching all emails data, this will take some time')
+  print('\n... open file %s' % file)
   sys.stdout.flush()
 
+  with open(file, 'a', encoding='utf-8', newline = '') as csvfile:
 
-  #exporting the values as .csv
-  rows = 0
-  file = 'emails_%s.csv' % (strftime("%Y_%m_%d_%H%M%S", gmtime()))
-  with open(file, 'w', encoding='utf-8', newline = '') as csvfile:
       fieldnames = ['Subject','DateTime','Message_body']
       writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter = ',')
       writer.writeheader()
 
-      for email in email_list:
-        msg_id = email['id'] # get id of individual message
-        email_dict = ReadEmailDetails(GMAIL,user_id,msg_id)
+      # label_ids = [label_id_one,label_id_two]  # to read unread emails from inbox
+      label_ids = []
 
-        if email_dict is not None:
-          writer.writerow(email_dict)
-          rows += 1
+      try:
+        response = GMAIL.users().messages().list(userId=user_id,
+                                                   labelIds=label_ids,
+                                                   maxResults=500).execute()
 
-        if rows > 0 and (rows%50) == 0:
-          print('... total %d read so far' % (rows))
+        messages = []
+        if 'messages' in response:
+          messages.extend(response['messages'])
+
+        while 'nextPageToken' in response:
+          page_token = response['nextPageToken']
+
+          response = GMAIL.users().messages().list(userId=user_id,
+                                                     labelIds=label_ids,
+                                                     pageToken=page_token,
+                                                     maxResults=500).execute()
+
+          email_list = response['messages']
+
+          for email in email_list:
+            msg_id = email['id'] # get id of individual message
+            email_dict = ReadEmailDetails(GMAIL,user_id,msg_id)
+
+            if email_dict is not None:
+              writer.writerow(email_dict)
+              rows += 1
+
+              print(rows,end="\r")
+              sys.stdout.flush()
+
+          print('... fetching next %d emails on [next page token: %s], %d exported so far' % (len(response['messages']), page_token, rows))
           sys.stdout.flush()
+
+      except errors.HttpError as error:
+        print('An error occurred: %s' % error)
 
   print('... emails exported into %s' % (file))
   print("\n... total %d message retrived" % (rows))
@@ -176,3 +165,11 @@ if __name__ == "__main__":
 
 
   print('... all Done!')
+
+'''
+pip3.7 install --upgrade pip
+pip3.7 install --upgrade google-api-python-client
+pip3.7 install --upgrade httplib2
+pip3.7 install --upgrade oauth2client
+pip3.7 install --upgrade bs4
+pip3.7 install --upgrade lxml
